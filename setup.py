@@ -9,10 +9,10 @@ if not torch.cuda.is_available():
     if os.environ.get("TORCH_CUDA_ARCH_LIST", None) is None:
         os.environ["TORCH_CUDA_ARCH_LIST"] = "8.0"
 
+
 cwd = Path(os.path.dirname(os.path.abspath(__file__)))
 _dc = torch.cuda.get_device_capability()
 _dc = f"{_dc[0]}{_dc[1]}"
-
 ext_modules = [
     CUDAExtension(
         "grouped_gemm_backend",
@@ -26,6 +26,7 @@ ext_modules = [
             ],
             "nvcc": [
                 f"--generate-code=arch=compute_{_dc},code=sm_{_dc}",
+                f"-DGROUPED_GEMM_DEVICE_CAPABILITY={_dc}",
                 # NOTE: CUTLASS requires c++17.
                 "-std=c++17",
             ],

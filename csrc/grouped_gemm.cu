@@ -19,6 +19,14 @@ namespace grouped_gemm {
     TORCH_CHECK(status == cudaSuccess, err);		    \
   } while (0)
 
+#define GROUPED_GEMM_STRINGIFY_HELPER(x) #x
+#define GROUPED_GEMM_STRINGIFY(x) \
+  GROUPED_GEMM_STRINGIFY_HELPER(x)
+
+#ifndef GROUPED_GEMM_DEVICE_CAPABILITY
+#error "Undefined compute capability"
+#endif
+
 using GroupedGemmKernelNN = typename cutlass::gemm::kernel::DefaultGemmGrouped<
   // Non-transposed A operand.
   ::cutlass::bfloat16_t,
@@ -35,8 +43,14 @@ using GroupedGemmKernelNN = typename cutlass::gemm::kernel::DefaultGemmGrouped<
   ::cutlass::layout::RowMajor,
   float,
   ::cutlass::arch::OpClassTensorOp,
-  // TODO(tgale): Update this to support SM90.
+#if GROUPED_GEMM_DEVICE_CAPABILITY >= 90
+  ::cutlass::arch::Sm90,
+#elif GROUPED_GEMM_DEVICE_CAPABILITY >= 80
   ::cutlass::arch::Sm80,
+#else
+#error "Unsupported compute capability " GROUPED_GEMM_STRINGIFY(GROUPED_GEMM_DEVICE_CAPABILITY)
+#endif
+  // TODO(tgale): Tune these parameters based on compute capability.
   ::cutlass::gemm::GemmShape<128, 128, 32>,
   ::cutlass::gemm::GemmShape<64, 64, 32>,
   ::cutlass::gemm::GemmShape<16, 8, 16>,
