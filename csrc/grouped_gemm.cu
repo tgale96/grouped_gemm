@@ -44,22 +44,26 @@ using GroupedGemmKernelNN = typename cutlass::gemm::kernel::DefaultGemmGrouped<
   float,
   ::cutlass::arch::OpClassTensorOp,
 #if GROUPED_GEMM_DEVICE_CAPABILITY >= 90
-  ::cutlass::arch::Sm90,
-#elif GROUPED_GEMM_DEVICE_CAPABILITY >= 80
+  // TODO(tgale): Update this for SM90 when it's supported by CUTLASS.
   ::cutlass::arch::Sm80,
-#else
-#error "Unsupported compute capability " GROUPED_GEMM_STRINGIFY(GROUPED_GEMM_DEVICE_CAPABILITY)
-#endif
-  // TODO(tgale): Tune these parameters based on compute capability.
   ::cutlass::gemm::GemmShape<128, 128, 32>,
   ::cutlass::gemm::GemmShape<64, 64, 32>,
   ::cutlass::gemm::GemmShape<16, 8, 16>,
+#elif GROUPED_GEMM_DEVICE_CAPABILITY >= 80
+  ::cutlass::arch::Sm80,
+  ::cutlass::gemm::GemmShape<128, 128, 32>,
+  ::cutlass::gemm::GemmShape<64, 64, 32>,
+  ::cutlass::gemm::GemmShape<16, 8, 16>,
+#else
+#error "Unsupported compute capability " GROUPED_GEMM_STRINGIFY(GROUPED_GEMM_DEVICE_CAPABILITY)
+#endif
   ::cutlass::epilogue::thread::LinearCombination<::cutlass::bfloat16_t, 8, float, float>,
   // NOTE: Threadblock swizzling is currently not supported by CUTLASS's grouped kernels.
   // This parameter is passed in at present to match the APIs of other kernels. The parameter
   // is unused within the kernel.
   ::cutlass::gemm::threadblock::GemmBatchedIdentityThreadblockSwizzle,
   // TODO(tgale): Experiment with GroupScheduleMode.
+  // TODO(tgale): Tune this for SM90.
   4>::GemmKernel;
 using GemmGroupedNN = ::cutlass::gemm::device::GemmGrouped<GroupedGemmKernelNN>;
 
