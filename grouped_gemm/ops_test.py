@@ -1,18 +1,19 @@
 import unittest
 import itertools
+
+from absl.testing import parameterized
+from grouped_gemm import ops
 import numpy as np
 import torch
-from absl.testing import parameterized
-
-from grouped_gemm import ops
 
 
-def assert_allclose(a, b, rtol=5e-03, atol=0):
-    np.testing.assert_allclose(
-        a.float().cpu().numpy(),
-        b.float().cpu().numpy(),
-        rtol=rtol, atol=atol,
-    )
+def allclose(x, y, pct=0.25):
+    mask = torch.isclose(x, y, rtol=1e-3)
+    pct_diff = (mask.numel() - mask.sum()) / mask.numel() * 100
+    if pct_diff > pct:
+        print("{:.2f}% of values not close.".format(pct_diff))
+        return False
+    return True
 
 
 _TEST_PROBLEMS = (
@@ -29,6 +30,7 @@ def randn(bs, x, y):
     out = (torch.rand(bs, x, y) - 0.5 * 2) / (y * x)
     return out.cuda().to(torch.bfloat16)
 
+
 @parameterized.parameters(*_TEST_PROBLEMS)
 class OpsTest(parameterized.TestCase):
 
@@ -40,7 +42,8 @@ class OpsTest(parameterized.TestCase):
 
         out = ops.grouped_gemm(a.view(-1, k), b, batch_sizes).view(z, m, n)
         expected_out = torch.bmm(a, b)
-        assert_allclose(out, expected_out)
+        self.assertTrue(allclose(out, expected_out))
+
 
 if __name__ == '__main__':
     unittest.main()
