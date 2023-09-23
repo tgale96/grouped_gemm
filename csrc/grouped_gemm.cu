@@ -227,7 +227,7 @@ torch::Tensor CublasGroupedGemm(torch::Tensor a,
 				torch::Tensor c,
 				torch::Tensor batch_sizes,
 				bool trans_b) {
-  int64_t bs = b.size(0), k = a.size(1);
+  int64_t bs = batch_sizes.size(0), k = a.size(1);
   int64_t n = trans_b ? b.size(1) : b.size(2);
   int64_t b_rows = b.size(1), b_cols = b.size(2);
   c10::BFloat16* a_ptr = a.data_ptr<c10::BFloat16>();
@@ -245,6 +245,50 @@ torch::Tensor CublasGroupedGemm(torch::Tensor a,
   return c;
 }
 
+torch::Tensor CublasGroupedGemmVariableK(torch::Tensor a,
+					 torch::Tensor b,
+					 torch::Tensor c,
+					 torch::Tensor batch_sizes) {
+  int64_t bs = batch_sizes.size(0), m = a.size(1), n = b.size(1);
+  c10::BFloat16* a_ptr = a.data_ptr<c10::BFloat16>();
+  c10::BFloat16* b_ptr = b.data_ptr<c10::BFloat16>();
+  c10::BFloat16* c_ptr = c.data_ptr<c10::BFloat16>();
+  for (int i = 0; i < bs; ++i) {
+    int64_t k = batch_sizes.data_ptr<int64_t>()[i];
+    CublasGemm(a_ptr, k, m, /*trans_a=*/true,
+	       b_ptr, k, n, /*trans_b=*/false,
+	       c_ptr, m, n);
+    a_ptr += k * m;
+    b_ptr += k * n;
+    c_ptr += m * n;
+  }
+  return c;
+}
+
+torch::Tensor GroupedGemmVariableK(torch::Tensor a,
+				   torch::Tensor b,
+				   torch::Tensor batch_sizes) {
+  // We expected a CUDA tensor with two dimensions and shape
+  // (tokens, hidden_out) for 'b'.
+  TORCH_CHECK(b.is_cuda());
+  TORCH_CHECK(b.ndimension() == 2);
+  TORCH_CHECK(b.scalar_type() == torch::kBFloat16);
+
+  // Validate the dimensions.
+  int64_t tokens = a.size(0), num_experts = batch_sizes.size(0);
+  int64_t m = a.size(1), n = b.size(1);
+
+  // Validate that we have the same contraction dimension.
+  TORCH_CHECK(tokens == b.size(0));
+
+  // Allocate the output.
+  auto options = torch::TensorOptions().dtype(torch::kBFloat16).device(a.device());
+  torch::Tensor c = torch::empty({num_experts, m, n}, options);
+
+  // Run the computation.
+  return CublasGroupedGemmVariableK(a, b, c, batch_sizes);
+}
+
 // NOTE: We only support dynamic group sizes for the 'a' tensor. Tensor 'b' is
 // assumed to be batched with fixed sized batches.
 //
@@ -252,23 +296,29 @@ torch::Tensor CublasGroupedGemm(torch::Tensor a,
 torch::Tensor GroupedGemm(torch::Tensor a,
 			  torch::Tensor b,
 			  torch::Tensor batch_sizes,
-			  bool trans_b) {
+			  bool trans_a, bool trans_b) {
+  // NOTE: We only support 'trans_a' or 'trans_b', not both.
+  TORCH_CHECK(!(trans_a && trans_b));
+
+  // We expect the batch_sizes on CPU.
+  TORCH_CHECK(batch_sizes.is_cpu());
+  TORCH_CHECK(batch_sizes.ndimension() == 1);
+  TORCH_CHECK(batch_sizes.scalar_type() == torch::kInt64);
+
   // We expected a CUDA tensor with two dimensions and shape
   // (tokens, hidden_in) for 'a'.
   TORCH_CHECK(a.is_cuda());
   TORCH_CHECK(a.ndimension() == 2);
   TORCH_CHECK(a.scalar_type() == torch::kBFloat16);
 
+  // Defer to the variable 'k' helper for the rest of the op.
+  if (trans_a) return GroupedGemmVariableK(a, b, batch_sizes);
+
   // We expected a CUDA tensor with three dimensions and shape
   // (num_experts, hidden_in, hidden_out) for 'b'.
   TORCH_CHECK(b.is_cuda());
   TORCH_CHECK(b.ndimension() == 3);
   TORCH_CHECK(b.scalar_type() == torch::kBFloat16);
-
-  // We expect the batch_sizes on CPU.
-  TORCH_CHECK(batch_sizes.is_cpu());
-  TORCH_CHECK(batch_sizes.ndimension() == 1);
-  TORCH_CHECK(batch_sizes.scalar_type() == torch::kInt64);
 
   // Validate the contraction dimensions match.
   int64_t tokens = a.size(0), num_experts = b.size(0);

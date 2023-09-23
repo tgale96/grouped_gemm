@@ -7,10 +7,11 @@ import numpy as np
 import torch
 
 
-def allclose(x, y, pct=0.25):
-    mask = torch.isclose(x, y, rtol=1e-3)
+def allclose(x, y, pct=2.0):
+    mask = torch.isclose(x, y, rtol=1e-5)
     pct_diff = (mask.numel() - mask.sum()) / mask.numel() * 100
     if pct_diff > pct:
+        print(x[torch.logical_not(mask)], y[torch.logical_not(mask)])
         print("{:.2f}% of values not close.".format(pct_diff))
         return False
     return True
@@ -60,9 +61,20 @@ class OpsTest(parameterized.TestCase):
         b = randn(z, n, k) if trans_b else randn(z, k, n)
         batch_sizes = torch.tensor([m] * z)
 
+        a.requires_grad_(True)
+        b.requires_grad_(True)
+        a_ref = a.detach().clone().requires_grad_(True)
+        b_ref = b.detach().clone().requires_grad_(True)
+
         out = ops.gmm(a, b, batch_sizes, trans_b)
-        expected_out = gmm(a, b, batch_sizes, trans_b)
+        expected_out = gmm(a_ref, b_ref, batch_sizes, trans_b)
         self.assertTrue(allclose(out, expected_out))
+
+        # Check gradients.
+        out.sum().backward()
+        expected_out.sum().backward()
+        self.assertTrue(allclose(a.grad, a_ref.grad))
+        self.assertTrue(allclose(b.grad, b_ref.grad))
 
     def testGroupedGemm_VariableSizes(self, z, m, k, n, trans_b):
         torch.manual_seed(0)
@@ -76,9 +88,20 @@ class OpsTest(parameterized.TestCase):
         batch_sizes[-1] += error
         assert batch_sizes.sum() == (m * z)
 
+        a.requires_grad_(True)
+        b.requires_grad_(True)
+        a_ref = a.detach().clone().requires_grad_(True)
+        b_ref = b.detach().clone().requires_grad_(True)
+
         out = ops.gmm(a, b, batch_sizes, trans_b)
-        expected_out = gmm(a, b, batch_sizes, trans_b)
+        expected_out = gmm(a_ref, b_ref, batch_sizes, trans_b)
         self.assertTrue(allclose(out, expected_out))
+
+        # Check gradients.
+        out.sum().backward()
+        expected_out.sum().backward()
+        self.assertTrue(allclose(a.grad, a_ref.grad))
+        self.assertTrue(allclose(b.grad, b_ref.grad))
 
 
 
