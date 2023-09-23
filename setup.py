@@ -13,6 +13,10 @@ if not torch.cuda.is_available():
 cwd = Path(os.path.dirname(os.path.abspath(__file__)))
 _dc = torch.cuda.get_device_capability()
 _dc = f"{_dc[0]}{_dc[1]}"
+
+# DEBUG
+_dc = 90
+
 ext_modules = [
     CUDAExtension(
         "grouped_gemm_backend",
