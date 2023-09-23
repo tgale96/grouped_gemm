@@ -12,7 +12,7 @@ class GroupedGemm(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, a, b, batch_sizes, trans_b):
-        return backend.grouped_gemm(a, b, batch_sizes) # , trans_b)
+        return backend.grouped_gemm(a, b, batch_sizes, trans_b)
 
 
 def gmm(a, b, batch_sizes, trans_b=False):

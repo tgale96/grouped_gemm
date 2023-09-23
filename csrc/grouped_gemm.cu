@@ -199,10 +199,9 @@ torch::Tensor CutlassGroupedGemm(torch::Tensor a,
   return c;
 }
 
-void CublasGemm(c10::BFloat16 *a, int64_t a_rows, int64_t a_cols,
-		c10::BFloat16 *b, int64_t b_rows, int64_t b_cols,
+void CublasGemm(c10::BFloat16 *a, int64_t a_rows, int64_t a_cols, bool trans_a,
+		c10::BFloat16 *b, int64_t b_rows, int64_t b_cols, bool trans_b,
 		c10::BFloat16 *c, int64_t c_rows, int64_t c_cols) {
-  bool trans_a = false, trans_b = false;
   int m = trans_b ? b_rows : b_cols;
   int k = trans_b ? b_cols : b_rows;
   int n = trans_a ? a_cols : a_rows;
@@ -226,16 +225,21 @@ void CublasGemm(c10::BFloat16 *a, int64_t a_rows, int64_t a_cols,
 torch::Tensor CublasGroupedGemm(torch::Tensor a,
 				torch::Tensor b,
 				torch::Tensor c,
-				torch::Tensor batch_sizes) {
-  int64_t bs = b.size(0), k = b.size(1), n = b.size(2);
+				torch::Tensor batch_sizes,
+				bool trans_b) {
+  int64_t bs = b.size(0), k = a.size(1);
+  int64_t n = trans_b ? b.size(1) : b.size(2);
+  int64_t b_rows = b.size(1), b_cols = b.size(2);
   c10::BFloat16* a_ptr = a.data_ptr<c10::BFloat16>();
   c10::BFloat16* b_ptr = b.data_ptr<c10::BFloat16>();
   c10::BFloat16* c_ptr = c.data_ptr<c10::BFloat16>();
   for (int i = 0; i < bs; ++i) {
     int64_t m = batch_sizes.data_ptr<int64_t>()[i];
-    CublasGemm(a_ptr, m, k, b_ptr, k, n, c_ptr, m, n);
+    CublasGemm(a_ptr, m, k, /*trans_a=*/false,
+	       b_ptr, b_rows, b_cols, trans_b,
+	       c_ptr, m, n);
     a_ptr += m * k;
-    b_ptr += k * n;
+    b_ptr += b_rows * b_cols;
     c_ptr += m * n;
   }
   return c;
@@ -245,7 +249,10 @@ torch::Tensor CublasGroupedGemm(torch::Tensor a,
 // assumed to be batched with fixed sized batches.
 //
 // TODO(tgale): Validate alignment is true for every batch element.
-torch::Tensor GroupedGemm(torch::Tensor a, torch::Tensor b, torch::Tensor batch_sizes) {
+torch::Tensor GroupedGemm(torch::Tensor a,
+			  torch::Tensor b,
+			  torch::Tensor batch_sizes,
+			  bool trans_b) {
   // We expected a CUDA tensor with two dimensions and shape
   // (tokens, hidden_in) for 'a'.
   TORCH_CHECK(a.is_cuda());
@@ -264,9 +271,10 @@ torch::Tensor GroupedGemm(torch::Tensor a, torch::Tensor b, torch::Tensor batch_
   TORCH_CHECK(batch_sizes.scalar_type() == torch::kInt64);
 
   // Validate the contraction dimensions match.
-  int64_t tokens = a.size(0), hidden_in = a.size(1);
-  int64_t num_experts = b.size(0), hidden_out = b.size(2);
-  TORCH_CHECK(hidden_in == b.size(1));
+  int64_t tokens = a.size(0), num_experts = b.size(0);
+  int64_t hidden_in = trans_b ? b.size(2) : b.size(1);
+  int64_t hidden_out = trans_b ? b.size(1) : b.size(2);
+  TORCH_CHECK(hidden_in == a.size(1));
 
   // Validate that we have one size per expert.
   TORCH_CHECK(batch_sizes.size(0) == num_experts);
@@ -275,14 +283,18 @@ torch::Tensor GroupedGemm(torch::Tensor a, torch::Tensor b, torch::Tensor batch_
   auto options = torch::TensorOptions().dtype(torch::kBFloat16).device(a.device());
   torch::Tensor c = torch::empty({tokens, hidden_out}, options);
 
-  // TODO(tgale): Support fused transposition.
+  // NOTE: We support transposition through the 'trans_b' flag.
   TORCH_CHECK(a.is_contiguous());
   TORCH_CHECK(b.is_contiguous());
 
   // NOTE: Use cuBLAS for SM90 until CUTLASS supports SM90-optimized grouped-gemm.
 #if GROUPED_GEMM_DEVICE_CAPABILITY >= 90
-  return CublasGroupedGemm(a, b, c, batch_sizes);
+  return CublasGroupedGemm(a, b, c, batch_sizes, trans_b);
 #elif GROUPED_GEMM_DEVICE_CAPABILITY >= 80
+  // TODO(tgale): Support transposition with CUTLASS grouped GEMM.
+  if (trans_b) {
+    return CublasGroupedGemm(a, b, c, batch_sizes, trans_b);
+  }
   return CutlassGroupedGemm(a, b, c, batch_sizes);
 #else
 #error "Unsupported compute capability " GROUPED_GEMM_STRINGIFY(GROUPED_GEMM_DEVICE_CAPABILITY)

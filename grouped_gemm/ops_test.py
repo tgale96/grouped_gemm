@@ -19,7 +19,7 @@ def allclose(x, y, pct=0.25):
 def add_transpose_flags(x):
     out = []
     for y in x:
-        for f in [(False,)]:
+        for f in [(False,), (True,)]:
             out.append(y + f)
     return out
 
@@ -54,7 +54,6 @@ def gmm(a, b, batch_sizes, trans_b=False):
 @parameterized.parameters(*_TEST_PROBLEMS)
 class OpsTest(parameterized.TestCase):
 
-    # TODO(tgale): Delete me.
     def testGroupedGemm_FixedSizes(self, z, m, k, n, trans_b):
         torch.manual_seed(0)
         a = randn(z, m, k).view(-1, k)
