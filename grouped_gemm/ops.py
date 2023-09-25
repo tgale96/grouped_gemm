@@ -1,11 +1,5 @@
-# NOTE: Torch needs to be imported before the custom
-# extensions. Otherwise libc10.so cannot be found.
+from grouped_gemm import backend
 import torch
-
-# TODO(tgale): Wrap this in a try-block with better
-# error message and instructions for building the
-# c++ operations.
-import grouped_gemm_backend as backend
 
 
 class GroupedGemm(torch.autograd.Function):
@@ -14,7 +8,7 @@ class GroupedGemm(torch.autograd.Function):
     def forward(ctx, a, b, batch_sizes, trans_b):
         ctx.save_for_backward(a, b, batch_sizes)
         ctx.trans_b = trans_b
-        return backend.grouped_gemm(a, b, batch_sizes, False, trans_b)
+        return backend.gmm(a, b, batch_sizes, trans_a=False, trans_b=trans_b)
 
     @staticmethod
     def backward(ctx, grad):
@@ -24,13 +18,14 @@ class GroupedGemm(torch.autograd.Function):
 
         agrad = None
         if ctx.needs_input_grad[0]:
-            agrad = backend.grouped_gemm(
-                grad, b, batch_sizes, False, not trans_b)
+            agrad = backend.gmm(
+                grad, b, batch_sizes, trans_a=False, trans_b=not trans_b)
 
         bgrad = None
         if ctx.needs_input_grad[1]:
             lhs, rhs = (grad, a) if trans_b else (a, grad)
-            bgrad = backend.grouped_gemm(lhs, rhs, batch_sizes, True, False)
+            bgrad = backend.gmm(
+                lhs, rhs, batch_sizes, trans_a=True, trans_b=False)
         return agrad, bgrad, None, None
 
 
