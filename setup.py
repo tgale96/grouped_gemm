@@ -44,16 +44,16 @@ extra_deps['all'] = set(dep for deps in extra_deps.values() for dep in deps)
 
 setup(
     name="grouped_gemm",
-    version="0.0.1",
-    author="Trevor Gale",
-    author_email="tgale@stanford.edu",
-    description="Grouped GEMM",
+    version="0.0.2",
+    author="One",
+    author_email="imonenext@gmail.com",
+    description="CUTLASS Grouped GEMM",
     long_description=open('README.md').read(),
     long_description_content_type='text/markdown',
-    url="https://github.com/tgale06/grouped_gemm",
+    url="https://github.com/imoneoi/cutlass_grouped_gemm",
     classifiers=[
         "Programming Language :: Python :: 3",
-        "License :: OSI Approved :: BSD License",
+        "License :: OSI Approved :: Apache Software License",
         "Operating System :: Unix",
     ],
     packages=find_packages(),
