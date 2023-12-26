@@ -10,15 +10,27 @@
 #include "cutlass/gemm/kernel/gemm_grouped.h"
 #include "cutlass/gemm/kernel/default_gemm_grouped.h"
 #include "cutlass/gemm/device/gemm_grouped.h"
+#include "cutlass/gemm/device/default_gemm_configuration.h"
 
 
 #ifndef GROUPED_GEMM_DEVICE_CAPABILITY
 #error "Undefined compute capability"
 #endif
 
+
 #define GROUPED_GEMM_STRINGIFY_HELPER(x) #x
 #define GROUPED_GEMM_STRINGIFY(x) \
   GROUPED_GEMM_STRINGIFY_HELPER(x)
+
+
+#if GROUPED_GEMM_DEVICE_CAPABILITY >= 90
+// TODO(one): Update this for SM90 when it's supported by CUTLASS.
+#define GROUPED_GEMM_DEVICE_TAG ::cutlass::arch::Sm80
+#elif GROUPED_GEMM_DEVICE_CAPABILITY >= 80
+#define GROUPED_GEMM_DEVICE_TAG ::cutlass::arch::Sm80
+#else
+#error "Unsupported compute capability " GROUPED_GEMM_STRINGIFY(GROUPED_GEMM_DEVICE_CAPABILITY)
+#endif
 
 
 template <typename T>
@@ -48,7 +60,24 @@ static void reorder_array(T* data, const std::vector<size_t>& indices) {
 }
 
 
-template <typename layoutA, typename layoutB, typename operandDtype, typename accumulatorDtype, bool sort_problems>
+template <
+    typename layoutA,
+    typename layoutB,
+    typename operandDtype,
+    typename accumulatorDtype,
+    bool sort_problems,
+
+    // default config
+    typename OperatorClass_ = ::cutlass::arch::OpClassTensorOp,
+    typename DefaultConfig_ = ::cutlass::gemm::device::DefaultGemmConfiguration<OperatorClass_, GROUPED_GEMM_DEVICE_TAG, operandDtype, operandDtype, operandDtype, accumulatorDtype>,
+    
+    int kAlignmentA_ = DefaultConfig_::kAlignmentA,
+    int kAlignmentB_ = DefaultConfig_::kAlignmentB,
+    typename ThreadblockShape_ = typename DefaultConfig_::ThreadblockShape,
+    typename WarpShape_ = typename DefaultConfig_::WarpShape,
+    typename InstructionShape_ = typename DefaultConfig_::InstructionShape,
+    typename EpilogueOutputOp_ = typename DefaultConfig_::EpilogueOutputOp,
+    int kStages_ = DefaultConfig_::kStages>
 class cutlass_grouped_gemm {
 public:
     using GroupedGemmKernel = typename cutlass::gemm::kernel::DefaultGemmGrouped<
@@ -56,40 +85,30 @@ public:
         operandDtype,
         layoutA,
         ::cutlass::ComplexTransform::kNone,
-        8,
+        kAlignmentA_,
         // B operand.
         operandDtype,
         layoutB,
         ::cutlass::ComplexTransform::kNone,
-        8,
+        kAlignmentB_,
         // C operand.
         operandDtype,
         ::cutlass::layout::RowMajor,
         accumulatorDtype,
-        ::cutlass::arch::OpClassTensorOp,
-        #if GROUPED_GEMM_DEVICE_CAPABILITY >= 90
-        // TODO(tgale): Update this for SM90 when it's supported by CUTLASS.
-        ::cutlass::arch::Sm80,
-        ::cutlass::gemm::GemmShape<128, 128, 32>,
-        ::cutlass::gemm::GemmShape<64, 64, 32>,
-        ::cutlass::gemm::GemmShape<16, 8, 16>,
-        #elif GROUPED_GEMM_DEVICE_CAPABILITY >= 80
-        ::cutlass::arch::Sm80,
-        ::cutlass::gemm::GemmShape<128, 128, 32>,
-        ::cutlass::gemm::GemmShape<64, 64, 32>,
-        ::cutlass::gemm::GemmShape<16, 8, 16>,
-        #else
-        #error "Unsupported compute capability " GROUPED_GEMM_STRINGIFY(GROUPED_GEMM_DEVICE_CAPABILITY)
-        #endif
-        ::cutlass::epilogue::thread::LinearCombination<operandDtype, 128 / cutlass::sizeof_bits<operandDtype>::value, accumulatorDtype, accumulatorDtype>,
+        OperatorClass_,
+        GROUPED_GEMM_DEVICE_TAG,
+        ThreadblockShape_,
+        WarpShape_,
+        InstructionShape_,
+        EpilogueOutputOp_,
         // NOTE: Threadblock swizzling is currently not supported by CUTLASS's grouped kernels.
         // This parameter is passed in at present to match the APIs of other kernels. The parameter
         // is unused within the kernel.
         ::cutlass::gemm::threadblock::GemmBatchedIdentityThreadblockSwizzle,
         // TODO(tgale): Experiment with GroupScheduleMode.
         // TODO(tgale): Tune this for SM90.
-        4,
-        ::cutlass::gemm::kernel::GroupScheduleMode::kDeviceOnly>::GemmKernel;
+        kStages_,
+        ::cutlass::gemm::kernel::GroupScheduleMode::kHostPrecompute>::GemmKernel;
 
     using GemmGrouped = ::cutlass::gemm::device::GemmGrouped<GroupedGemmKernel>;
 
