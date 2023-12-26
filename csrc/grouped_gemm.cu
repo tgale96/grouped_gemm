@@ -107,8 +107,7 @@ public:
         ::cutlass::gemm::threadblock::GemmBatchedIdentityThreadblockSwizzle,
         // TODO(tgale): Experiment with GroupScheduleMode.
         // TODO(tgale): Tune this for SM90.
-        kStages_,
-        ::cutlass::gemm::kernel::GroupScheduleMode::kHostPrecompute>::GemmKernel;
+        kStages_>::GemmKernel;
 
     using GemmGrouped = ::cutlass::gemm::device::GemmGrouped<GroupedGemmKernel>;
 
