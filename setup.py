@@ -13,6 +13,16 @@ else:
 
 cwd = Path(os.path.dirname(os.path.abspath(__file__)))
 
+nvcc_flags = [
+    "-std=c++17",  # NOTE: CUTLASS requires c++17
+]
+
+if device_capability:
+    nvcc_flags.extend(
+        f"--generate-code=arch=compute_{device_capability},code=sm_{device_capability}",
+        f"-DGROUPED_GEMM_DEVICE_CAPABILITY={device_capability}",
+    )
+
 ext_modules = [
     CUDAExtension(
         "grouped_gemm_backend",
@@ -25,12 +35,7 @@ ext_modules = [
             "cxx": [
                 "-fopenmp", "-fPIC", "-Wno-strict-aliasing"
             ],
-            "nvcc": [
-                f"--generate-code=arch=compute_{device_capability},code=sm_{device_capability}",
-                f"-DGROUPED_GEMM_DEVICE_CAPABILITY={device_capability}",
-                # NOTE: CUTLASS requires c++17.
-                "-std=c++17",
-            ],
+            "nvcc": nvcc_flags,
         }
     )
 ]
