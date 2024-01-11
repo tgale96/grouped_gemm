@@ -18,10 +18,10 @@ nvcc_flags = [
 ]
 
 if device_capability:
-    nvcc_flags.extend(
+    nvcc_flags.extend([
         f"--generate-code=arch=compute_{device_capability},code=sm_{device_capability}",
         f"-DGROUPED_GEMM_DEVICE_CAPABILITY={device_capability}",
-    )
+    ])
 
 ext_modules = [
     CUDAExtension(
