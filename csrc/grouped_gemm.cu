@@ -30,10 +30,7 @@ namespace grouped_gemm {
 #define GROUPED_GEMM_STRINGIFY(x) \
   GROUPED_GEMM_STRINGIFY_HELPER(x)
 
-#ifndef GROUPED_GEMM_DEVICE_CAPABILITY
-#error "Undefined compute capability"
-#endif
-
+// TODO(tgale): Update this for SM90 when it's supported by CUTLASS.
 using GroupedGemmKernelNN = typename cutlass::gemm::kernel::DefaultGemmGrouped<
   // Non-transposed A operand.
   ::cutlass::bfloat16_t,
@@ -50,20 +47,10 @@ using GroupedGemmKernelNN = typename cutlass::gemm::kernel::DefaultGemmGrouped<
   ::cutlass::layout::RowMajor,
   float,
   ::cutlass::arch::OpClassTensorOp,
-#if GROUPED_GEMM_DEVICE_CAPABILITY >= 90
-  // TODO(tgale): Update this for SM90 when it's supported by CUTLASS.
   ::cutlass::arch::Sm80,
   ::cutlass::gemm::GemmShape<128, 128, 32>,
   ::cutlass::gemm::GemmShape<64, 64, 32>,
   ::cutlass::gemm::GemmShape<16, 8, 16>,
-#elif GROUPED_GEMM_DEVICE_CAPABILITY >= 80
-  ::cutlass::arch::Sm80,
-  ::cutlass::gemm::GemmShape<128, 128, 32>,
-  ::cutlass::gemm::GemmShape<64, 64, 32>,
-  ::cutlass::gemm::GemmShape<16, 8, 16>,
-#else
-#error "Unsupported compute capability " GROUPED_GEMM_STRINGIFY(GROUPED_GEMM_DEVICE_CAPABILITY)
-#endif
   ::cutlass::epilogue::thread::LinearCombination<::cutlass::bfloat16_t, 8, float, float>,
   // NOTE: Threadblock swizzling is currently not supported by CUTLASS's grouped kernels.
   // This parameter is passed in at present to match the APIs of other kernels. The parameter
@@ -348,10 +335,10 @@ void GroupedGemm(torch::Tensor a,
   TORCH_CHECK(b.is_contiguous());
 
   // NOTE: Use cuBLAS for SM90 until CUTLASS supports SM90-optimized grouped-gemm.
-#if GROUPED_GEMM_DEVICE_CAPABILITY >= 90
+#if !defined(GROUPED_GEMM_DEVICE_CAPABILITY) || GROUPED_GEMM_DEVICE_CAPABILITY != 80
   CublasGroupedGemm(a, b, c, batch_sizes, trans_b);
   return;
-#elif GROUPED_GEMM_DEVICE_CAPABILITY >= 80
+#else
   // TODO(tgale): Support transposition with CUTLASS grouped GEMM.
   if (trans_b) {
     CublasGroupedGemm(a, b, c, batch_sizes, trans_b);
@@ -359,8 +346,6 @@ void GroupedGemm(torch::Tensor a,
   }
   CutlassGroupedGemm(a, b, c, batch_sizes);
   return;
-#else
-#error "Unsupported compute capability " GROUPED_GEMM_STRINGIFY(GROUPED_GEMM_DEVICE_CAPABILITY)
 #endif
 }
 
