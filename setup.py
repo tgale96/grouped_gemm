@@ -5,6 +5,7 @@ import torch
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 if os.environ.get("TORCH_CUDA_ARCH_LIST"):
+    device_capability = os.environ.get("TORCH_CUDA_ARCH_LIST").strip(',')[0]
     # Let PyTorch builder to choose device to target for.
     device_capability = ""
 else:
@@ -50,7 +51,7 @@ extra_deps['all'] = set(dep for deps in extra_deps.values() for dep in deps)
 
 setup(
     name="grouped_gemm",
-    version="0.1.1",
+    version="0.1.2",
     author="Trevor Gale",
     author_email="tgale@stanford.edu",
     description="Grouped GEMM",
