@@ -5,7 +5,6 @@ import torch
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 if os.environ.get("TORCH_CUDA_ARCH_LIST"):
-    device_capability = os.environ.get("TORCH_CUDA_ARCH_LIST").strip(',')[0]
     # Let PyTorch builder to choose device to target for.
     device_capability = ""
 else:
