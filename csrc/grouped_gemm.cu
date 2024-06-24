@@ -11,6 +11,8 @@
 #include "cutlass/gemm/kernel/default_gemm_grouped.h"
 #include "cutlass/gemm/device/gemm_grouped.h"
 
+#include <type_traits>
+
 namespace grouped_gemm {
 
 #define CUDA_CALL(code)					    \
@@ -30,16 +32,20 @@ namespace grouped_gemm {
 #define GROUPED_GEMM_STRINGIFY(x) \
   GROUPED_GEMM_STRINGIFY_HELPER(x)
 
+template <bool trans>
+using GroupedGemmInputLayout = std::conditional_t<trans, ::cutlass::layout::ColumnMajor, ::cutlass::layout::RowMajor>;
+
 // TODO(tgale): Update this for SM90 when it's supported by CUTLASS.
-using GroupedGemmKernelNN = typename cutlass::gemm::kernel::DefaultGemmGrouped<
-  // Non-transposed A operand.
+template <bool trans_a, bool trans_b>
+using GroupedGemmKernel = typename cutlass::gemm::kernel::DefaultGemmGrouped<
+  // A operand.
   ::cutlass::bfloat16_t,
-  ::cutlass::layout::RowMajor,
+  GroupedGemmInputLayout<trans_a>,
   ::cutlass::ComplexTransform::kNone,
   8,
-  // Non-transposed B operand.
+  // B operand.
   ::cutlass::bfloat16_t,
-  ::cutlass::layout::RowMajor,
+  GroupedGemmInputLayout<trans_b>,
   ::cutlass::ComplexTransform::kNone,
   8,
   // C operand.
@@ -59,14 +65,20 @@ using GroupedGemmKernelNN = typename cutlass::gemm::kernel::DefaultGemmGrouped<
   // TODO(tgale): Experiment with GroupScheduleMode.
   // TODO(tgale): Tune this for SM90.
   4>::GemmKernel;
-using GemmGroupedNN = ::cutlass::gemm::device::GemmGrouped<GroupedGemmKernelNN>;
 
-std::vector<cutlass::gemm::GemmCoord> MakeProblemSizes(torch::Tensor b, torch::Tensor batch_sizes) {
+template <bool trans_a, bool trans_b>
+using GemmGrouped = ::cutlass::gemm::device::GemmGrouped<GroupedGemmKernel<trans_a, trans_b>>;
+
+template <bool trans_a, bool trans_b>
+std::vector<cutlass::gemm::GemmCoord> MakeProblemSizes(torch::Tensor a, torch::Tensor b, torch::Tensor batch_sizes) {
   const size_t num_experts = batch_sizes.size(0);
-  const size_t k = b.size(1), n = b.size(2);
+  const size_t hidden_in = a.size(1), hidden_out = (trans_a || trans_b) ? b.size(1) : b.size(2);
   std::vector<cutlass::gemm::GemmCoord> problem_sizes(num_experts);
   for (int i = 0; i < num_experts; ++i) {
-    problem_sizes[i] = cutlass::gemm::GemmCoord(batch_sizes.data_ptr<int64_t>()[i], n, k);
+    int64_t bs = batch_sizes.data_ptr<int64_t>()[i];
+    problem_sizes[i] = trans_a
+      ? cutlass::gemm::GemmCoord(hidden_in, hidden_out, bs)
+      : cutlass::gemm::GemmCoord(bs, hidden_out, hidden_in);
   }
   return problem_sizes;
 }
@@ -84,12 +96,23 @@ torch::Tensor CopyToDevice(const std::vector<T> &x, const torch::Device &device)
   return out;
 }
 
-template <typename Gemm>
+template <typename T>
+static void ReorderArray(T* data, const std::vector<size_t>& indices) {
+    // For now, simply create a copy of the data and then copy over to the original.
+    std::vector<T> copy(indices.size());
+    for (size_t i = 0; i < indices.size(); ++i) {
+        copy.at(i) = data[indices[i]];
+    }
+
+    memcpy(data, copy.data(), indices.size() * sizeof(T));
+}
+
+template <typename Gemm, bool trans_a, bool trans_b>
 typename Gemm::Arguments MakeArguments(torch::Tensor a,
 				       torch::Tensor b,
 				       torch::Tensor c,
 				       torch::Tensor batch_sizes) {
-  auto problem_sizes_host = MakeProblemSizes(b, batch_sizes);
+  auto problem_sizes_host = MakeProblemSizes<trans_a, trans_b>(a, b, batch_sizes);
 
   // Calculate the number of threadblocks to use and validate the result.
   int64_t num_experts = problem_sizes_host.size();
@@ -135,6 +158,22 @@ typename Gemm::Arguments MakeArguments(torch::Tensor a,
     elements_b += problem.k() * problem.n();
     elements_c += problem.m() * problem.n();
   }
+  // Only sort problems when trans_a = True because only this case K are different
+  if (trans_a) {
+      std::vector<size_t> indices(num_experts);
+      std::iota(indices.begin(), indices.end(), 0);
+      std::stable_sort(indices.begin(), indices.end(), [&problem_sizes_host](size_t i, size_t j) {
+          return problem_sizes_host[i].k() > problem_sizes_host[j].k();
+      });
+
+      ReorderArray(problem_sizes_host.data(), indices);
+      ReorderArray(lda_host.data(), indices);
+      ReorderArray(ldb_host.data(), indices);
+      ReorderArray(ldc_host.data(), indices);
+      ReorderArray(ptr_a_host.data(), indices);
+      ReorderArray(ptr_b_host.data(), indices);
+      ReorderArray(ptr_c_host.data(), indices);
+  }
 
   // Copy the problem sizes, pointers and leading dimension data to the device.
   torch::Tensor lda = CopyToDevice(lda_host, a.device());
@@ -162,14 +201,15 @@ typename Gemm::Arguments MakeArguments(torch::Tensor a,
   return arguments;
 }
 
+template <bool trans_a, bool trans_b>
 torch::Tensor CutlassGroupedGemm(torch::Tensor a,
 				 torch::Tensor b,
 				 torch::Tensor c,
 				 torch::Tensor batch_sizes) {
-  using Gemm = GemmGroupedNN;
+  using Gemm = GemmGrouped<trans_a, trans_b>;
   Gemm gemm;
 
-  auto arguments = MakeArguments<Gemm>(a, b, c, batch_sizes);
+  auto arguments = MakeArguments<Gemm, trans_a, trans_b>(a, b, c, batch_sizes);
   int64_t workspace_size = gemm.get_workspace_size(arguments);
   auto options = torch::TensorOptions().dtype(torch::kInt8).device(a.device());
   torch::Tensor workspace = torch::empty(workspace_size, options);
@@ -302,49 +342,61 @@ void GroupedGemm(torch::Tensor a,
   TORCH_CHECK(a.ndimension() == 2);
   TORCH_CHECK(a.scalar_type() == torch::kBFloat16);
 
+  TORCH_CHECK(b.is_cuda());
+  TORCH_CHECK(c.is_cuda());
+  TORCH_CHECK(b.scalar_type() == torch::kBFloat16);
+  TORCH_CHECK(c.scalar_type() == torch::kBFloat16);
+
+  // The expected shapes of 'b' and 'c' are:
+  //   * when 'trans_a' is set: b=(tokens, hidden_out),                 c=(num_experts, hidden_in, hidden_out)
+  //   * when 'trans_b' is set: b=(num_experts, hidden_out, hidden_in), c=(tokens, hidden_out)
+  //   * otherwise:             b=(num_experts, hidden_in, hidden_out), c=(tokens, hidden
+  if (trans_a) {
+    TORCH_CHECK(b.ndimension() == 2);
+    TORCH_CHECK(c.ndimension() == 3);
+    TORCH_CHECK(b.size(0) == a.size(0));
+    TORCH_CHECK(c.size(0) == batch_sizes.size(0));
+    TORCH_CHECK(c.size(1) == a.size(1));
+    TORCH_CHECK(c.size(2) == b.size(1));
+  } else {
+    TORCH_CHECK(b.ndimension() == 3);
+    TORCH_CHECK(c.ndimension() == 2);
+
+    // Validate the contraction dimensions match.
+    int64_t tokens = a.size(0), num_experts = b.size(0);
+    int64_t hidden_in = trans_b ? b.size(2) : b.size(1);
+    int64_t hidden_out = trans_b ? b.size(1) : b.size(2);
+    TORCH_CHECK(hidden_in == a.size(1));
+
+    // Validate that we have one size per expert.
+    TORCH_CHECK(batch_sizes.size(0) == num_experts);
+  }
+
+  // NOTE: We support transposition through the 'trans_b' flag.
+  TORCH_CHECK(a.is_contiguous());
+  TORCH_CHECK(b.is_contiguous());
+  TORCH_CHECK(c.is_contiguous());
+
+
+  // NOTE: Use cuBLAS for SM90 until CUTLASS supports SM90-optimized grouped-gemm.
+#if !defined(GROUPED_GEMM_DEVICE_CAPABILITY) || GROUPED_GEMM_DEVICE_CAPABILITY != 80
   // Defer to the variable 'k' helper for the rest of the op.
   if (trans_a) {
     GroupedGemmVariableK(a, b, c, batch_sizes);
     return;
   }
-
-  // We expected a CUDA tensor with three dimensions and shape
-  // (num_experts, hidden_in, hidden_out) for 'b'.
-  TORCH_CHECK(b.is_cuda());
-  TORCH_CHECK(b.ndimension() == 3);
-  TORCH_CHECK(b.scalar_type() == torch::kBFloat16);
-
-  // Validate the contraction dimensions match.
-  int64_t tokens = a.size(0), num_experts = b.size(0);
-  int64_t hidden_in = trans_b ? b.size(2) : b.size(1);
-  int64_t hidden_out = trans_b ? b.size(1) : b.size(2);
-  TORCH_CHECK(hidden_in == a.size(1));
-
-  // Validate that we have one size per expert.
-  TORCH_CHECK(batch_sizes.size(0) == num_experts);
-
-  // Validate the output shape.
-  TORCH_CHECK(c.is_cuda());
-  TORCH_CHECK(c.ndimension() == 2);
-  TORCH_CHECK(c.scalar_type() == torch::kBFloat16);
-  TORCH_CHECK(c.size(0) == tokens);
-  TORCH_CHECK(c.size(1) == hidden_out);
-
-  // NOTE: We support transposition through the 'trans_b' flag.
-  TORCH_CHECK(a.is_contiguous());
-  TORCH_CHECK(b.is_contiguous());
-
-  // NOTE: Use cuBLAS for SM90 until CUTLASS supports SM90-optimized grouped-gemm.
-#if !defined(GROUPED_GEMM_DEVICE_CAPABILITY) || GROUPED_GEMM_DEVICE_CAPABILITY != 80
   CublasGroupedGemm(a, b, c, batch_sizes, trans_b);
   return;
 #else
-  // TODO(tgale): Support transposition with CUTLASS grouped GEMM.
-  if (trans_b) {
-    CublasGroupedGemm(a, b, c, batch_sizes, trans_b);
+  if (trans_a) {
+    CutlassGroupedGemm<true, false>(a, b, c, batch_sizes);
     return;
   }
-  CutlassGroupedGemm(a, b, c, batch_sizes);
+  if (trans_b) {
+    CutlassGroupedGemm<false, true>(a, b, c, batch_sizes);
+    return;
+  }
+  CutlassGroupedGemm<false, false>(a, b, c, batch_sizes);
   return;
 #endif
 }

@@ -104,6 +104,34 @@ class OpsTest(parameterized.TestCase):
         self.assertTrue(allclose(b.grad, b_ref.grad))
 
 
+class EdgeCasesTest(unittest.TestCase):
+
+    def testGroupedGemm_ZeroSize(self):
+        torch.manual_seed(0)
+        m = 16384
+        k = 4096
+        n = 14336
+        num_experts = 8
+
+        a = randn(num_experts, m // num_experts, k).view(-1, k)
+        b = randn(num_experts, k, n)
+        batch_sizes = torch.tensor([219, 2246, 5, 8103, 1, 1117, 4693, 0]).to(torch.long)
+
+        a.requires_grad_(True)
+        b.requires_grad_(True)
+        a_ref = a.detach().clone().requires_grad_(True)
+        b_ref = b.detach().clone().requires_grad_(True)
+
+        out = ops.gmm(a, b, batch_sizes)
+        expected_out = gmm(a_ref, b_ref, batch_sizes)
+        self.assertTrue(allclose(out, expected_out))
+
+        # Check gradients.
+        out.sum().backward()
+        expected_out.sum().backward()
+        self.assertTrue(allclose(a.grad, a_ref.grad))
+        self.assertTrue(allclose(b.grad, b_ref.grad))
+
 
 if __name__ == '__main__':
     unittest.main()
