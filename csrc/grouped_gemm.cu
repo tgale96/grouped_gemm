@@ -99,12 +99,10 @@ torch::Tensor CopyToDevice(const std::vector<T> &x, const torch::Device &device)
 template <typename T>
 static void ReorderArray(T* data, const std::vector<size_t>& indices) {
     // For now, simply create a copy of the data and then copy over to the original.
-    std::vector<T> copy(indices.size());
+    std::vector<T> copy(data, data + indices.size());
     for (size_t i = 0; i < indices.size(); ++i) {
-        copy.at(i) = data[indices[i]];
+        data[i] = copy.at(indices[i]);
     }
-
-    memcpy(data, copy.data(), indices.size() * sizeof(T));
 }
 
 template <typename Gemm, bool trans_a, bool trans_b>
