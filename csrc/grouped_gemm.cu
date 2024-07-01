@@ -114,50 +114,64 @@ typename Gemm::Arguments MakeArguments(torch::Tensor a,
 				       torch::Tensor batch_sizes) {
   auto problem_sizes_host = MakeProblemSizes<trans_a, trans_b>(a, b, batch_sizes);
 
-  // Calculate the number of threadblocks to use and validate the result.
-  int64_t num_experts = problem_sizes_host.size();
-
-  // NOTE: This is borrowed from FasterTransformer.
-  int threadblock_count = Gemm::sufficient(problem_sizes_host.data(), num_experts);
-  if (!threadblock_count) {
-    TORCH_CHECK(false, "Grouped GEMM execution not possible with HW");
-  }
+  int64_t num_experts_orig = problem_sizes_host.size();
 
   // Create the host arrays of leading dimension data and pointer data.
   using LayoutA = typename Gemm::LayoutA;
   using LayoutB = typename Gemm::LayoutB;
   using LayoutC = typename Gemm::LayoutC;
 
-  std::vector<int64_t> lda_host(num_experts), offsets_a(num_experts);
-  std::vector<int64_t> ldb_host(num_experts), offsets_b(num_experts);
-  std::vector<int64_t> ldc_host(num_experts), offsets_c(num_experts);
+  std::vector<int64_t> lda_host, ldb_host, ldc_host;
   int64_t elements_a = 0, elements_b = 0, elements_c = 0;
 
   using ElementA = typename Gemm::ElementA;
   using ElementB = typename Gemm::ElementB;
   using ElementC = typename Gemm::ElementC;
-  std::vector<ElementA *> ptr_a_host(num_experts);
-  std::vector<ElementB *> ptr_b_host(num_experts);
-  std::vector<ElementC *> ptr_c_host(num_experts);
+  std::vector<ElementA *> ptr_a_host, ptr_b_host, ptr_c_host;
 
-  for (int i = 0; i < num_experts; ++i) {
+  lda_host.reserve(num_experts_orig);
+  ldb_host.reserve(num_experts_orig);
+  ldc_host.reserve(num_experts_orig);
+
+  ptr_a_host.reserve(num_experts_orig);
+  ptr_b_host.reserve(num_experts_orig);
+  ptr_c_host.reserve(num_experts_orig);
+
+  // CUTLASS doesn't handle problems with `k=0` correctly, see https://github.com/NVIDIA/cutlass/pull/1593.
+  // Until a fix is available on the CUTLASS side, handle these problems by ourselves.
+  int64_t num_experts = 0;
+  for (int i = 0; i < num_experts_orig; ++i) {
     auto problem = problem_sizes_host[i];
-    lda_host[i] = LayoutA::packed({problem.m(), problem.k()}).stride(0);
-    ldb_host[i] = LayoutB::packed({problem.k(), problem.n()}).stride(0);
-    ldc_host[i] = LayoutC::packed({problem.m(), problem.n()}).stride(0);
+    if (problem.k() == 0) {
+      CUDA_CALL(cudaMemsetAsync((ElementC*)c.data_ptr() + elements_c,
+				0,
+				problem.m() * problem.n() * sizeof(ElementC),
+				c10::cuda::getCurrentCUDAStream()));
+    } else {
+      lda_host.push_back(LayoutA::packed({problem.m(), problem.k()}).stride(0));
+      ldb_host.push_back(LayoutB::packed({problem.k(), problem.n()}).stride(0));
+      ldc_host.push_back(LayoutC::packed({problem.m(), problem.n()}).stride(0));
 
-    offsets_a[i] = elements_a;
-    offsets_b[i] = elements_b;
-    offsets_c[i] = elements_c;
+      ptr_a_host.push_back((ElementA*)a.data_ptr() + elements_a);
+      ptr_b_host.push_back((ElementB*)b.data_ptr() + elements_b);
+      ptr_c_host.push_back((ElementC*)c.data_ptr() + elements_c);
 
-    ptr_a_host[i] = (ElementA*)a.data_ptr() + offsets_a[i];
-    ptr_b_host[i] = (ElementB*)b.data_ptr() + offsets_b[i];
-    ptr_c_host[i] = (ElementC*)c.data_ptr() + offsets_c[i];
+      problem_sizes_host[num_experts++] = problem;
+    }
 
     elements_a += problem.m() * problem.k();
     elements_b += problem.k() * problem.n();
     elements_c += problem.m() * problem.n();
   }
+  problem_sizes_host.resize(num_experts);
+
+  // Calculate the number of threadblocks to use and validate the result.
+  // NOTE: This is borrowed from FasterTransformer.
+  int threadblock_count = Gemm::sufficient(problem_sizes_host.data(), num_experts);
+  if (!threadblock_count) {
+    TORCH_CHECK(false, "Grouped GEMM execution not possible with HW");
+  }
+
   // Only sort problems when trans_a = True because only this case K are different
   if (trans_a) {
       std::vector<size_t> indices(num_experts);

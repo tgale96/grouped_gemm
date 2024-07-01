@@ -132,6 +132,21 @@ class EdgeCasesTest(unittest.TestCase):
         self.assertTrue(allclose(a.grad, a_ref.grad))
         self.assertTrue(allclose(b.grad, b_ref.grad))
 
+    def testGroupedGemm_ZeroK(self):
+        sz = 128
+        total_tokens = 192
+
+        a = torch.ones(total_tokens, sz).cuda().to(torch.bfloat16)
+        b = torch.ones(total_tokens, sz).cuda().to(torch.bfloat16)
+        c = torch.ones(4, sz, sz).cuda().to(torch.bfloat16)
+        batch_sizes = torch.tensor([0, 128, 0, 64]).to(torch.long)
+
+        ops.backend.gmm(a, b, batch_sizes, trans_a=True, c=c)
+        self.assertTrue((c[0] == 0).all())
+        self.assertTrue((c[1] == 128).all())
+        self.assertTrue((c[2] == 0).all())
+        self.assertTrue((c[3] == 64).all())
+
 
 if __name__ == '__main__':
     unittest.main()
