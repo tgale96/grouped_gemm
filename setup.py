@@ -23,6 +23,9 @@ if device_capability:
         f"-DGROUPED_GEMM_DEVICE_CAPABILITY={device_capability}",
     ])
 
+if os.environ.get("GROUPED_GEMM_FULL_CUTLASS", "0") == "1":
+    nvcc_flags.extend(["-DGROUPED_GEMM_FULL_CUTLASS"])
+
 ext_modules = [
     CUDAExtension(
         "grouped_gemm_backend",
