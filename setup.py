@@ -4,27 +4,14 @@ from setuptools import setup, find_packages
 import torch
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
-if os.environ.get("TORCH_CUDA_ARCH_LIST"):
-    # Let PyTorch builder to choose device to target for.
-    device_capability = ""
-else:
-    device_capability = torch.cuda.get_device_capability()
-    device_capability = f"{device_capability[0]}{device_capability[1]}"
-
 cwd = Path(os.path.dirname(os.path.abspath(__file__)))
 
 nvcc_flags = [
     "-std=c++17",  # NOTE: CUTLASS requires c++17
 ]
 
-if device_capability:
-    nvcc_flags.extend([
-        f"--generate-code=arch=compute_{device_capability},code=sm_{device_capability}",
-        f"-DGROUPED_GEMM_DEVICE_CAPABILITY={device_capability}",
-    ])
-
-if os.environ.get("GROUPED_GEMM_FULL_CUTLASS", "0") == "1":
-    nvcc_flags.extend(["-DGROUPED_GEMM_FULL_CUTLASS"])
+if os.environ.get("GROUPED_GEMM_CUTLASS", "0") == "1":
+    nvcc_flags.extend(["-DGROUPED_GEMM_CUTLASS"])
 
 ext_modules = [
     CUDAExtension(

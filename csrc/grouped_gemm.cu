@@ -354,7 +354,7 @@ void GroupedGemm(torch::Tensor a,
   TORCH_CHECK(a.ndimension() == 2);
   TORCH_CHECK(a.scalar_type() == torch::kBFloat16);
 
-#if !defined(GROUPED_GEMM_FULL_CUTLASS)
+#if !defined(GROUPED_GEMM_CUTLASS)
   if (trans_a) {
     // If we can't use CUTLASS for the transposed cases, defer to the variable 'k' helper using cuBLAS
     // for the rest of the op.
@@ -398,13 +398,10 @@ void GroupedGemm(torch::Tensor a,
   TORCH_CHECK(b.is_contiguous());
   TORCH_CHECK(c.is_contiguous());
 
-
-  // NOTE: Use cuBLAS for SM90 until CUTLASS supports SM90-optimized grouped-gemm.
-#if !defined(GROUPED_GEMM_DEVICE_CAPABILITY) || GROUPED_GEMM_DEVICE_CAPABILITY != 80
+#if !defined(GROUPED_GEMM_CUTLASS)
   CublasGroupedGemm(a, b, c, batch_sizes, trans_b);
   return;
 #else
-#if defined(GROUPED_GEMM_FULL_CUTLASS)
   if (trans_a) {
     CutlassGroupedGemm<true, false>(a, b, c, batch_sizes);
     return;
@@ -413,13 +410,6 @@ void GroupedGemm(torch::Tensor a,
     CutlassGroupedGemm<false, true>(a, b, c, batch_sizes);
     return;
   }
-#else
-  TORCH_CHECK(!trans_a, "The trans_a case should have been handled earlier");
-  if (trans_b) {
-    CublasGroupedGemm(a, b, c, batch_sizes, trans_b);
-    return;
-  }
-#endif
   CutlassGroupedGemm<false, false>(a, b, c, batch_sizes);
   return;
 #endif
