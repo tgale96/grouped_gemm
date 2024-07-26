@@ -68,4 +68,3 @@ setup(
     cmdclass={"build_ext": BuildExtension},
     extras_require=extra_deps,
 )
-)
