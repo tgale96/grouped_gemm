@@ -40,6 +40,8 @@ ext_modules = [
     )
 ]
 
+install_requires = ['torch>=2.3.0,<2.4',]
+
 extra_deps = {}
 
 extra_deps['dev'] = [
@@ -65,5 +67,6 @@ setup(
     packages=find_packages(),
     ext_modules=ext_modules,
     cmdclass={"build_ext": BuildExtension},
+    install_requires=install_requires,
     extras_require=extra_deps,
 )
