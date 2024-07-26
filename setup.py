@@ -1,7 +1,8 @@
 import os
 from pathlib import Path
-from setuptools import setup, find_packages
+
 import torch
+from setuptools import find_packages, setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 if os.environ.get("TORCH_CUDA_ARCH_LIST"):
@@ -40,8 +41,6 @@ ext_modules = [
     )
 ]
 
-install_requires = ['torch>=2.3.0,<2.4',]
-
 extra_deps = {}
 
 extra_deps['dev'] = [
@@ -67,6 +66,6 @@ setup(
     packages=find_packages(),
     ext_modules=ext_modules,
     cmdclass={"build_ext": BuildExtension},
-    install_requires=install_requires,
     extras_require=extra_deps,
+)
 )
