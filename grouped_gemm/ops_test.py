@@ -104,6 +104,49 @@ class OpsTest(parameterized.TestCase):
         self.assertTrue(allclose(b.grad, b_ref.grad))
 
 
+class EdgeCasesTest(unittest.TestCase):
+
+    def testGroupedGemm_ZeroSize(self):
+        torch.manual_seed(0)
+        m = 16384
+        k = 4096
+        n = 14336
+        num_experts = 8
+
+        a = randn(num_experts, m // num_experts, k).view(-1, k)
+        b = randn(num_experts, k, n)
+        batch_sizes = torch.tensor([219, 2246, 5, 8103, 1, 1117, 4693, 0]).to(torch.long)
+
+        a.requires_grad_(True)
+        b.requires_grad_(True)
+        a_ref = a.detach().clone().requires_grad_(True)
+        b_ref = b.detach().clone().requires_grad_(True)
+
+        out = ops.gmm(a, b, batch_sizes)
+        expected_out = gmm(a_ref, b_ref, batch_sizes)
+        self.assertTrue(allclose(out, expected_out))
+
+        # Check gradients.
+        out.sum().backward()
+        expected_out.sum().backward()
+        self.assertTrue(allclose(a.grad, a_ref.grad))
+        self.assertTrue(allclose(b.grad, b_ref.grad))
+
+    def testGroupedGemm_ZeroK(self):
+        sz = 128
+        total_tokens = 192
+
+        a = torch.ones(total_tokens, sz).cuda().to(torch.bfloat16)
+        b = torch.ones(total_tokens, sz).cuda().to(torch.bfloat16)
+        c = torch.ones(4, sz, sz).cuda().to(torch.bfloat16)
+        batch_sizes = torch.tensor([0, 128, 0, 64]).to(torch.long)
+
+        ops.backend.gmm(a, b, batch_sizes, trans_a=True, c=c)
+        self.assertTrue((c[0] == 0).all())
+        self.assertTrue((c[1] == 128).all())
+        self.assertTrue((c[2] == 0).all())
+        self.assertTrue((c[3] == 64).all())
+
 
 if __name__ == '__main__':
     unittest.main()

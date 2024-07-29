@@ -21,8 +21,10 @@ nvcc_flags = [
 if device_capability:
     nvcc_flags.extend([
         f"--generate-code=arch=compute_{device_capability},code=sm_{device_capability}",
-        f"-DGROUPED_GEMM_DEVICE_CAPABILITY={device_capability}",
     ])
+
+if os.environ.get("GROUPED_GEMM_CUTLASS", "0") == "1":
+    nvcc_flags.extend(["-DGROUPED_GEMM_CUTLASS"])
 
 ext_modules = [
     CUDAExtension(
@@ -51,7 +53,7 @@ extra_deps['all'] = set(dep for deps in extra_deps.values() for dep in deps)
 
 setup(
     name="grouped_gemm",
-    version="0.1.4",
+    version="0.1.5",
     author="Trevor Gale",
     author_email="tgale@stanford.edu",
     description="Grouped GEMM",
