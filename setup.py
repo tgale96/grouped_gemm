@@ -53,7 +53,7 @@ extra_deps['all'] = set(dep for deps in extra_deps.values() for dep in deps)
 
 setup(
     name="grouped_gemm",
-    version="0.1.5",
+    version="0.1.6",
     author="Trevor Gale",
     author_email="tgale@stanford.edu",
     description="Grouped GEMM",
