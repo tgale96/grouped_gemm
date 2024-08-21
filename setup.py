@@ -1,9 +1,13 @@
 import os
 from pathlib import Path
 
-import torch
 from setuptools import find_packages, setup
-from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+
+try:
+    import torch
+    from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+except ModuleNotFoundError as e:
+    raise ModuleNotFoundError("No module named 'torch'. `torch` is required to install `grouped_gemm`.",) from e
 
 if os.environ.get("TORCH_CUDA_ARCH_LIST"):
     # Let PyTorch builder to choose device to target for.
@@ -53,7 +57,7 @@ extra_deps['all'] = set(dep for deps in extra_deps.values() for dep in deps)
 
 setup(
     name="grouped_gemm",
-    version="0.1.5",
+    version="0.1.6",
     author="Trevor Gale",
     author_email="tgale@stanford.edu",
     description="Grouped GEMM",
