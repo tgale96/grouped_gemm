@@ -26,5 +26,4 @@ for some performance measurements on A100 and H100.
 
 # Upcoming features
 
-* Running grouped GEMM kernels without GPU<->CPU synchronization points.
 * Hopper-optimized grouped GEMM kernels.
