@@ -107,6 +107,120 @@ torch::Tensor TypedEmpty(size_t numel, const torch::Device& device) {
     return torch::empty(numel * sizeof(T), torch::dtype(torch::kInt8).device(device));
 }
 
+struct RawGemmArguments {
+  torch::Tensor lda, ldb, ldc, ptr_a, ptr_b, ptr_c, problem_sizes;
+  int threadblock_count{};
+};
+
+template <
+  typename Gemm,
+  typename ElementA, typename ElementB, typename ElementC
+>
+RawGemmArguments MakeArgumentsOnDevice(int num_experts, const torch::Device& device) {
+    TORCH_CHECK(
+        num_experts <= kMaxExperts,
+        "At most ", kMaxExperts,
+        " experts are supported when batch_sizes is a CUDA tensor, but got ", num_experts
+    );
+
+    return RawGemmArguments {
+      .lda = TypedEmpty<int64_t>(num_experts, device),
+      .ldb = TypedEmpty<int64_t>(num_experts, device),
+      .ldc = TypedEmpty<int64_t>(num_experts, device),
+      .ptr_a = TypedEmpty<ElementA*>(num_experts, device),
+      .ptr_b = TypedEmpty<ElementB*>(num_experts, device),
+      .ptr_c = TypedEmpty<ElementC*>(num_experts, device),
+      .problem_sizes = TypedEmpty<cutlass::gemm::GemmCoord>(num_experts, device),
+
+      // We don't know the problem dimensions on the host, so we just base the number of threadblocks on occupancy here.
+      .threadblock_count = Gemm::sufficient(),
+    };
+}
+
+template <
+  bool kDynamicK,
+  typename Gemm,
+  typename ElementA, typename ElementB, typename ElementC,
+  typename LayoutA, typename LayoutB, typename LayoutC
+>
+RawGemmArguments MakeArgumentsOnHost(torch::Tensor a,
+				     torch::Tensor b,
+				     torch::Tensor c,
+				     torch::Tensor batch_sizes,
+				     ::cutlass::gemm::GemmCoord coord_template,
+				     int64_t num_experts) {
+  std::vector<::cutlass::gemm::GemmCoord> problem_sizes_host(num_experts);
+
+  // Create the host arrays of leading dimension data and pointer data.
+  std::vector<int64_t> lda_host(num_experts), ldb_host(num_experts), ldc_host(num_experts);
+  int64_t elements_a = 0, elements_b = 0, elements_c = 0;
+
+  std::vector<ElementA *> ptr_a_host(num_experts), ptr_b_host(num_experts), ptr_c_host(num_experts);
+
+  for (int i = 0; i < num_experts; ++i) {
+    auto& problem = problem_sizes_host[i];
+    problem = coord_template;
+    (kDynamicK ? problem.k() : problem.m()) = batch_sizes.data_ptr<int64_t>()[i];
+
+    lda_host[i] = LayoutA::packed({problem.m(), problem.k()}).stride(0);
+    ldb_host[i] = LayoutB::packed({problem.k(), problem.n()}).stride(0);
+    ldc_host[i] = LayoutC::packed({problem.m(), problem.n()}).stride(0);
+
+    ptr_a_host[i] = (ElementA*)a.data_ptr() + elements_a;
+    ptr_b_host[i] = (ElementB*)b.data_ptr() + elements_b;
+    ptr_c_host[i] = (ElementC*)c.data_ptr() + elements_c;
+
+    elements_a += problem.m() * problem.k();
+    elements_b += problem.k() * problem.n();
+    elements_c += problem.m() * problem.n();
+
+    if (problem.k() == 0) {
+      // CUTLASS doesn't handle problems with `k=0` correctly, see https://github.com/NVIDIA/cutlass/pull/1593.
+      // Until a fix is available on the CUTLASS side, handle these problems by ourselves:
+      //   * set the output to zero with `cudaMemsetAsync()`
+      //   * make this problem a no-op by setting `m=0` and `n=0` (CUTLASS can handle the outer dimensions being zero)
+      CUDA_CALL(cudaMemsetAsync(ptr_c_host[i],
+        0,
+        problem.m() * problem.n() * sizeof(ElementC),
+        c10::cuda::getCurrentCUDAStream()));
+
+      problem.m() = 0;
+      problem.n() = 0;
+    }
+  }
+
+  // Only sort problems when K are different
+  if (kDynamicK) {
+      std::vector<size_t> indices(num_experts);
+      std::iota(indices.begin(), indices.end(), 0);
+      std::stable_sort(indices.begin(), indices.end(), [&problem_sizes_host](size_t i, size_t j) {
+          return problem_sizes_host[i].k() > problem_sizes_host[j].k();
+      });
+
+      ReorderArray(problem_sizes_host.data(), indices);
+      ReorderArray(lda_host.data(), indices);
+      ReorderArray(ldb_host.data(), indices);
+      ReorderArray(ldc_host.data(), indices);
+      ReorderArray(ptr_a_host.data(), indices);
+      ReorderArray(ptr_b_host.data(), indices);
+      ReorderArray(ptr_c_host.data(), indices);
+  }
+
+  // Copy the problem sizes, pointers and leading dimension data to the device.
+  return RawGemmArguments {
+    .lda = CopyToDevice(lda_host, a.device()),
+    .ldb = CopyToDevice(ldb_host, a.device()),
+    .ldc = CopyToDevice(ldc_host, a.device()),
+    .ptr_a = CopyToDevice(ptr_a_host, a.device()),
+    .ptr_b = CopyToDevice(ptr_b_host, a.device()),
+    .ptr_c = CopyToDevice(ptr_c_host, a.device()),
+    .problem_sizes = CopyToDevice(problem_sizes_host, a.device()),
+
+    // We know the problem dimensions on the host, so we can calculate the number of threadblocks based on that.
+    .threadblock_count = Gemm::sufficient(problem_sizes_host.data(), num_experts),
+  };
+}
+
 template <
   bool kDynamicK,
   typename Gemm,
@@ -119,99 +233,22 @@ typename Gemm::Arguments MakeArguments(torch::Tensor a,
 				       torch::Tensor batch_sizes,
 				       ::cutlass::gemm::GemmCoord coord_template,
 				       int64_t num_experts) {
-  torch::Tensor lda, ldb, ldc, ptr_a, ptr_b, ptr_c, problem_sizes;
-  int threadblock_count{};
-
+  RawGemmArguments raw_args;
   if (batch_sizes.is_cuda()) {
-    TORCH_CHECK(
-        num_experts <= kMaxExperts,
-        "At most ", kMaxExperts,
-        " experts are supported when batch_sizes is a CUDA tensor, but got ", num_experts
-    );
-
-    lda = TypedEmpty<int64_t>(num_experts, a.device());
-    ldb = TypedEmpty<int64_t>(num_experts, a.device());
-    ldc = TypedEmpty<int64_t>(num_experts, a.device());
-    ptr_a = TypedEmpty<ElementA*>(num_experts, a.device());
-    ptr_b = TypedEmpty<ElementB*>(num_experts, a.device());
-    ptr_c = TypedEmpty<ElementC*>(num_experts, a.device());
-    problem_sizes = TypedEmpty<cutlass::gemm::GemmCoord>(num_experts, a.device());
-
-    // We don't know the problem dimensions on the host, so we just base the number of threadblocks on occupancy here.
-    threadblock_count = Gemm::sufficient();
+    raw_args = MakeArgumentsOnDevice<
+      Gemm, ElementA, ElementB, ElementC
+    >(num_experts, a.device());
   } else {
-    std::vector<::cutlass::gemm::GemmCoord> problem_sizes_host(num_experts);
-
-    // Create the host arrays of leading dimension data and pointer data.
-    std::vector<int64_t> lda_host(num_experts), ldb_host(num_experts), ldc_host(num_experts);
-    int64_t elements_a = 0, elements_b = 0, elements_c = 0;
-
-    std::vector<ElementA *> ptr_a_host(num_experts), ptr_b_host(num_experts), ptr_c_host(num_experts);
-
-    for (int i = 0; i < num_experts; ++i) {
-      auto& problem = problem_sizes_host[i];
-      problem = coord_template;
-      (kDynamicK ? problem.k() : problem.m()) = batch_sizes.data_ptr<int64_t>()[i];
-
-      lda_host[i] = LayoutA::packed({problem.m(), problem.k()}).stride(0);
-      ldb_host[i] = LayoutB::packed({problem.k(), problem.n()}).stride(0);
-      ldc_host[i] = LayoutC::packed({problem.m(), problem.n()}).stride(0);
-
-      ptr_a_host[i] = (ElementA*)a.data_ptr() + elements_a;
-      ptr_b_host[i] = (ElementB*)b.data_ptr() + elements_b;
-      ptr_c_host[i] = (ElementC*)c.data_ptr() + elements_c;
-
-      elements_a += problem.m() * problem.k();
-      elements_b += problem.k() * problem.n();
-      elements_c += problem.m() * problem.n();
-
-      if (problem.k() == 0) {
-        // CUTLASS doesn't handle problems with `k=0` correctly, see https://github.com/NVIDIA/cutlass/pull/1593.
-        // Until a fix is available on the CUTLASS side, handle these problems by ourselves:
-        //   * set the output to zero with `cudaMemsetAsync()`
-        //   * make this problem a no-op by setting `m=0` and `n=0` (CUTLASS can handle the outer dimensions being zero)
-        CUDA_CALL(cudaMemsetAsync(ptr_c_host[i],
-          0,
-          problem.m() * problem.n() * sizeof(ElementC),
-          c10::cuda::getCurrentCUDAStream()));
-
-        problem.m() = 0;
-        problem.n() = 0;
-      }
-    }
-
-    // We know the problem dimensions on the host, so we can calculate the number of threadblocks based on that.
-    threadblock_count = Gemm::sufficient(problem_sizes_host.data(), num_experts);
-
-    // Only sort problems when K are different
-    if (kDynamicK) {
-        std::vector<size_t> indices(num_experts);
-        std::iota(indices.begin(), indices.end(), 0);
-        std::stable_sort(indices.begin(), indices.end(), [&problem_sizes_host](size_t i, size_t j) {
-            return problem_sizes_host[i].k() > problem_sizes_host[j].k();
-        });
-
-        ReorderArray(problem_sizes_host.data(), indices);
-        ReorderArray(lda_host.data(), indices);
-        ReorderArray(ldb_host.data(), indices);
-        ReorderArray(ldc_host.data(), indices);
-        ReorderArray(ptr_a_host.data(), indices);
-        ReorderArray(ptr_b_host.data(), indices);
-        ReorderArray(ptr_c_host.data(), indices);
-    }
-
-    // Copy the problem sizes, pointers and leading dimension data to the device.
-    lda = CopyToDevice(lda_host, a.device());
-    ldb = CopyToDevice(ldb_host, a.device());
-    ldc = CopyToDevice(ldc_host, a.device());
-    ptr_a = CopyToDevice(ptr_a_host, a.device());
-    ptr_b = CopyToDevice(ptr_b_host, a.device());
-    ptr_c = CopyToDevice(ptr_c_host, a.device());
-    problem_sizes = CopyToDevice(problem_sizes_host, a.device());
+    raw_args = MakeArgumentsOnHost<
+      kDynamicK,
+      Gemm,
+      ElementA, ElementB, ElementC,
+      LayoutA, LayoutB, LayoutC
+    >(a, b, c, batch_sizes, coord_template, num_experts);
   }
 
   // Validate the result.
-  if (!threadblock_count) {
+  if (!raw_args.threadblock_count) {
     TORCH_CHECK(false, "Grouped GEMM execution not possible with HW");
   }
 
@@ -220,19 +257,19 @@ typename Gemm::Arguments MakeArguments(torch::Tensor a,
   // so we can safely pass `nullptr` for `host_problem_sizes`.
   // TODO(tgale): Experiment with `GroupScheduleMode::kHostPrecompute` for `batch_sizes.is_cpu()`, where we
   // know the problem dimensions on the host.
-  typename Gemm::Arguments arguments((cutlass::gemm::GemmCoord*)problem_sizes.data_ptr(),
-  				     (int)num_experts,
-  				     (int)threadblock_count,
-  				     epilogue_op,
-  				     (ElementA**)ptr_a.data_ptr(),
-  				     (ElementB**)ptr_b.data_ptr(),
-  				     (ElementC**)ptr_c.data_ptr(),
-  				     (ElementC**)ptr_c.data_ptr(),
-  				     /*lda=*/(int64_t*)lda.data_ptr(),
-  				     /*ldb=*/(int64_t*)ldb.data_ptr(),
-  				     /*ldc=*/(int64_t*)ldc.data_ptr(),
-  				     /*ldd=*/(int64_t*)ldc.data_ptr(),
-  				     /*host_problem_sizes=*/nullptr);
+  typename Gemm::Arguments arguments((cutlass::gemm::GemmCoord*)raw_args.problem_sizes.data_ptr(),
+				     (int)num_experts,
+				     (int)raw_args.threadblock_count,
+				     epilogue_op,
+				     (ElementA**)raw_args.ptr_a.data_ptr(),
+				     (ElementB**)raw_args.ptr_b.data_ptr(),
+				     (ElementC**)raw_args.ptr_c.data_ptr(),
+				     (ElementC**)raw_args.ptr_c.data_ptr(),
+				     /*lda=*/(int64_t*)raw_args.lda.data_ptr(),
+				     /*ldb=*/(int64_t*)raw_args.ldb.data_ptr(),
+				     /*ldc=*/(int64_t*)raw_args.ldc.data_ptr(),
+				     /*ldd=*/(int64_t*)raw_args.ldc.data_ptr(),
+				     /*host_problem_sizes=*/nullptr);
   return arguments;
 }
 
