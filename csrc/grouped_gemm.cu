@@ -108,7 +108,7 @@ torch::Tensor TypedEmpty(size_t numel, const torch::Device& device) {
 }
 
 template <
-  bool dynamic_k,
+  bool kDynamicK,
   typename Gemm,
   typename ElementA, typename ElementB, typename ElementC,
   typename LayoutA, typename LayoutB, typename LayoutC
@@ -151,7 +151,7 @@ typename Gemm::Arguments MakeArguments(torch::Tensor a,
     for (int i = 0; i < num_experts; ++i) {
       auto& problem = problem_sizes_host[i];
       problem = coord_template;
-      (dynamic_k ? problem.k() : problem.m()) = batch_sizes.data_ptr<int64_t>()[i];
+      (kDynamicK ? problem.k() : problem.m()) = batch_sizes.data_ptr<int64_t>()[i];
 
       lda_host[i] = LayoutA::packed({problem.m(), problem.k()}).stride(0);
       ldb_host[i] = LayoutB::packed({problem.k(), problem.n()}).stride(0);
@@ -184,7 +184,7 @@ typename Gemm::Arguments MakeArguments(torch::Tensor a,
     threadblock_count = Gemm::sufficient(problem_sizes_host.data(), num_experts);
 
     // Only sort problems when K are different
-    if (dynamic_k) {
+    if (kDynamicK) {
         std::vector<size_t> indices(num_experts);
         std::iota(indices.begin(), indices.end(), 0);
         std::stable_sort(indices.begin(), indices.end(), [&problem_sizes_host](size_t i, size_t j) {
@@ -256,7 +256,7 @@ torch::Tensor CutlassGroupedGemm(torch::Tensor a,
   Gemm gemm;
   int64_t num_experts = batch_sizes.size(0);
   auto arguments = MakeArguments<
-    /*dynamic_k*/trans_a,
+    /*kDynamicK*/trans_a,
     Gemm,
     ElementA, ElementB, ElementC,
     LayoutA, LayoutB, LayoutC
@@ -271,7 +271,7 @@ torch::Tensor CutlassGroupedGemm(torch::Tensor a,
       //   * the number of elements to process is microscopically small
       //   * we don't need any additional global memory
       FillArguments<
-          /*dynamic_k*/trans_a,
+          /*kDynamicK*/trans_a,
           ElementA, ElementB, ElementC,
           LayoutA, LayoutB, LayoutC
       ><<<1, kMaxExperts, 0, c10::cuda::getCurrentCUDAStream()>>>(
