@@ -61,6 +61,8 @@ __global__ void FillArguments(
   BlockScan(shared_memory.scan_storage).ExclusiveSum(dynamic_dim, dynamic_dim_cumsum);
   __syncthreads();
 
+  // We have to use `GemmProblem[1]` here instead of just `GemmProblem` because `SortDescending()` expects
+  // `KeyT (&)[ITEMS_PER_THREAD]` for the `keys` argument (i.e., `GemmProblem (&keys)[1]` in our case).
   GemmProblem problem[1] = {
     GemmProblem {
       .dims = dims,
