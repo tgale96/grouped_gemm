@@ -273,6 +273,54 @@ typename Gemm::Arguments MakeArguments(torch::Tensor a,
   return arguments;
 }
 
+template <
+  bool trans_a,
+  typename ElementA, typename ElementB, typename ElementC,
+  typename LayoutA, typename LayoutB, typename LayoutC,
+  typename Arguments
+>
+void FillCutlassArguments(int num_experts,
+			  torch::Tensor batch_sizes,
+			  torch::Tensor a,
+			  torch::Tensor b,
+			  torch::Tensor c,
+			  const Arguments& arguments,
+			  ::cutlass::gemm::GemmCoord coord_template) {
+  // Convert the batch sizes to the format CUTLASS understands on the device.
+  // Use a single block here because:
+  //   * the number of elements to process is microscopically small
+  //   * we don't need any additional global memory
+  FillArguments<
+      /*kDynamicK*/trans_a,
+      ElementA, ElementB, ElementC,
+      LayoutA, LayoutB, LayoutC
+  ><<<1, kMaxExperts, 0, c10::cuda::getCurrentCUDAStream()>>>(
+      num_experts, batch_sizes.data_ptr<int64_t>(),
+      (ElementA*)a.data_ptr(), (ElementB*)b.data_ptr(), (ElementC*)c.data_ptr(),
+      arguments, coord_template
+  );
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+template <typename Args>
+void RemoveK0Problems(int num_experts, const Args& arguments) {
+  // For zeroing out the outputs (which might be arbitrarily large), we want to use
+  // as many threadblocks as possible in order to hit the maximum possible global memory bandwidth.
+  // `arguments.threadblock_count`, which we will use for the grouped GEMM proper,
+  // should be a good approximation for this.
+  // When the `k=0` case is fixed in CUTLASS, we can completely remove this function.
+  ZeroOutK0Outputs<><<<
+    arguments.threadblock_count, at::cuda::detail::CUDA_NUM_THREADS, 0, c10::cuda::getCurrentCUDAStream()
+  >>>(
+    num_experts, arguments
+  );
+  IgnoreK0Problems<><<<
+    1, kMaxExperts, 0, c10::cuda::getCurrentCUDAStream()
+  >>>(
+    num_experts, arguments
+  );
+}
+
 template <bool trans_a, bool trans_b>
 torch::Tensor CutlassGroupedGemm(torch::Tensor a,
 				 torch::Tensor b,
@@ -301,36 +349,13 @@ torch::Tensor CutlassGroupedGemm(torch::Tensor a,
   torch::Tensor workspace = torch::empty(workspace_size, options);
 
   if (batch_sizes.is_cuda()) {
-      // Convert the batch sizes to the format CUTLASS understands on the device.
-      // Use a single block here because:
-      //   * the number of elements to process is microscopically small
-      //   * we don't need any additional global memory
-      FillArguments<
-          /*kDynamicK*/trans_a,
-          ElementA, ElementB, ElementC,
-          LayoutA, LayoutB, LayoutC
-      ><<<1, kMaxExperts, 0, c10::cuda::getCurrentCUDAStream()>>>(
-          num_experts, batch_sizes.data_ptr<int64_t>(),
-          (ElementA*)a.data_ptr(), (ElementB*)b.data_ptr(), (ElementC*)c.data_ptr(),
-          arguments, coord_template
-      );
-      C10_CUDA_KERNEL_LAUNCH_CHECK();
+      FillCutlassArguments<
+        trans_a,
+        ElementA, ElementB, ElementC,
+        LayoutA, LayoutB, LayoutC
+      >(num_experts, batch_sizes, a, b, c, arguments, coord_template);
 
-      // For zeroing out the outputs (which might be arbitrarily large), we want to use
-      // as many threadblocks as possible in order to hit the maximum possible global memory bandwidth.
-      // `arguments.threadblock_count`, which we will use for the grouped GEMM proper,
-      // should be a good approximation for this.
-      // When the `k=0` case is fixed in CUTLASS, we can completely remove the kernel invocations below.
-      ZeroOutK0Outputs<><<<
-        arguments.threadblock_count, at::cuda::detail::CUDA_NUM_THREADS, 0, c10::cuda::getCurrentCUDAStream()
-      >>>(
-        num_experts, arguments
-      );
-      IgnoreK0Problems<><<<
-        1, kMaxExperts, 0, c10::cuda::getCurrentCUDAStream()
-      >>>(
-        num_experts, arguments
-      );
+      RemoveK0Problems<>(num_experts, arguments);
   }
 
   // Initialize the kernel.
