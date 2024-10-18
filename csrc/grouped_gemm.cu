@@ -518,6 +518,10 @@ void GroupedGemm(torch::Tensor a,
   CublasGroupedGemm(a, b, c, batch_sizes, trans_b);
   return;
 #else
+  // The `coord_template` argument contains `kDynamicDim` as one of its dimensions
+  // as a placeholder. This placeholder is later expanded into the actual dimension
+  // for every element of the batch,  either on the host or on the device
+  // (if we can't do in on the host).
   const auto coord_template = trans_a
     ? cutlass::gemm::GemmCoord(hidden_in, hidden_out, kDynamicDim)
     : cutlass::gemm::GemmCoord(kDynamicDim, hidden_out, hidden_in);
