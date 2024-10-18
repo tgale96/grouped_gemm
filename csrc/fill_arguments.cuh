@@ -26,7 +26,7 @@ struct ExtractGemmProblemK {
 template <
     // If `k` is dynamic, we sort the problems by `k` in descending order.
     // Otherwise, `m` is dynamic, and no sorting happens.
-    bool dynamic_k,
+    bool kDynamicK,
     typename ElementA, typename ElementB, typename ElementC,
     typename LayoutA, typename LayoutB, typename LayoutC,
     typename Args
@@ -39,7 +39,7 @@ __global__ void FillArguments(
   const int expert_idx = threadIdx.x;
   const int batch_size = expert_idx < num_experts ? batch_sizes[expert_idx] : -1;
 
-  if (dynamic_k) {
+  if (kDynamicK) {
     assert(dims.k() == kDynamicDim);
     dims.k() = batch_size;
   } else {
@@ -56,7 +56,7 @@ __global__ void FillArguments(
   };
   __shared__ SharedMemory shared_memory;
 
-  int dynamic_dim = dynamic_k ? dims.k() : dims.m();
+  int dynamic_dim = kDynamicK ? dims.k() : dims.m();
   int dynamic_dim_cumsum;
   BlockScan(shared_memory.scan_storage).ExclusiveSum(dynamic_dim, dynamic_dim_cumsum);
   __syncthreads();
@@ -67,15 +67,15 @@ __global__ void FillArguments(
       .lda = LayoutA::packed({dims.m(), dims.k()}).stride(0),
       .ldb = LayoutB::packed({dims.k(), dims.n()}).stride(0),
       .ldc = LayoutC::packed({dims.m(), dims.n()}).stride(0),
-      .a_offset = dynamic_k
+      .a_offset = kDynamicK
           ? (dims.m() * dynamic_dim_cumsum)
           : (dynamic_dim_cumsum * dims.k()),
-      .b_offset = (dynamic_k ? dynamic_dim_cumsum : expert_idx * dims.k()) * dims.n(),
-      .c_offset = (dynamic_k ? expert_idx * dims.m() : dynamic_dim_cumsum) * dims.n(),
+      .b_offset = (kDynamicK ? dynamic_dim_cumsum : expert_idx * dims.k()) * dims.n(),
+      .c_offset = (kDynamicK ? expert_idx * dims.m() : dynamic_dim_cumsum) * dims.n(),
     },
   };
 
-  if constexpr (dynamic_k) {
+  if constexpr (kDynamicK) {
     BlockSort(shared_memory.sort_storage).SortDescending(problem, ExtractGemmProblemK{});
     // Quoting the CUB documentation (https://nvidia.github.io/cccl/cub/api/classcub_1_1BlockRadixSort.html):
     // > A subsequent __syncthreads() threadblock barrier should be invoked after calling this method if the collective’s temporary storage [...]
