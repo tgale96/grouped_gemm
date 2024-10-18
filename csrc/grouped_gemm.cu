@@ -216,6 +216,10 @@ typename Gemm::Arguments MakeArguments(torch::Tensor a,
   }
 
   typename Gemm::EpilogueOutputOp::Params epilogue_op(/*alpha=*/1.0f, /*beta=*/0.0f);
+  // We currently always use `GroupScheduleMode::kDeviceOnly`, which doesn't use `host_problem_sizes` at all,
+  // so we can safely pass `nullptr` for `host_problem_sizes`.
+  // TODO(tgale): Experiment with `GroupScheduleMode::kHostPrecompute` for `batch_sizes.is_cpu()`, where we
+  // know the problem dimensions on the host.
   typename Gemm::Arguments arguments((cutlass::gemm::GemmCoord*)problem_sizes.data_ptr(),
   				     (int)num_experts,
   				     (int)threadblock_count,
@@ -228,12 +232,6 @@ typename Gemm::Arguments MakeArguments(torch::Tensor a,
   				     /*ldb=*/(int64_t*)ldb.data_ptr(),
   				     /*ldc=*/(int64_t*)ldc.data_ptr(),
   				     /*ldd=*/(int64_t*)ldc.data_ptr(),
-  				     // We currently always use `GroupScheduleMode::kDeviceOnly`,
-  				     // which doesn't use `host_problem_sizes` at all, so we can
-  				     // safely pass `nullptr` here.
-  				     // TODO(tgale): Experiment with `GroupScheduleMode::kHostPrecompute`
-  				     // for `batch_sizes.is_cpu()`, where we know the problem dimensions
-  				     // on the host.
   				     /*host_problem_sizes=*/nullptr);
   return arguments;
 }
