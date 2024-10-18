@@ -21,8 +21,8 @@ def add_flags(x):
     out = []
     for y in x:
         for trans_b in (False, True):
-            for gpu_batch_sizes in (False, True):
-                out.append(y + (trans_b, gpu_batch_sizes))
+            for batch_sizes_on_device in (False, True):
+                out.append(y + (trans_b, batch_sizes_on_device))
     return out
 
 
@@ -56,12 +56,12 @@ def gmm(a, b, batch_sizes, trans_b=False):
 @parameterized.parameters(*_TEST_PROBLEMS)
 class OpsTest(parameterized.TestCase):
 
-    def testGroupedGemm_FixedSizes(self, z, m, k, n, trans_b, gpu_batch_sizes):
+    def testGroupedGemm_FixedSizes(self, z, m, k, n, trans_b, batch_sizes_on_device):
         torch.manual_seed(0)
         a = randn(z, m, k).view(-1, k)
         b = randn(z, n, k) if trans_b else randn(z, k, n)
         batch_sizes = torch.tensor([m] * z)
-        if gpu_batch_sizes:
+        if batch_sizes_on_device:
             batch_sizes = batch_sizes.cuda()
 
         a.requires_grad_(True)
@@ -79,7 +79,7 @@ class OpsTest(parameterized.TestCase):
         self.assertTrue(allclose(a.grad, a_ref.grad))
         self.assertTrue(allclose(b.grad, b_ref.grad))
 
-    def testGroupedGemm_VariableSizes(self, z, m, k, n, trans_b, gpu_batch_sizes):
+    def testGroupedGemm_VariableSizes(self, z, m, k, n, trans_b, batch_sizes_on_device):
         torch.manual_seed(0)
         a = randn(z, m, k).view(-1, k)
         b = randn(z, n, k) if trans_b else randn(z, k, n)
@@ -90,7 +90,7 @@ class OpsTest(parameterized.TestCase):
         error = m * z - batch_sizes.sum()
         batch_sizes[-1] += error
         assert batch_sizes.sum() == (m * z)
-        if gpu_batch_sizes:
+        if batch_sizes_on_device:
             batch_sizes = batch_sizes.cuda()
 
         a.requires_grad_(True)
@@ -112,7 +112,7 @@ class OpsTest(parameterized.TestCase):
 @parameterized.parameters(False, True)
 class EdgeCasesTest(unittest.TestCase):
 
-    def testGroupedGemm_ZeroSize(self, gpu_batch_sizes):
+    def testGroupedGemm_ZeroSize(self, batch_sizes_on_device):
         torch.manual_seed(0)
         m = 16384
         k = 4096
@@ -122,7 +122,7 @@ class EdgeCasesTest(unittest.TestCase):
         a = randn(num_experts, m // num_experts, k).view(-1, k)
         b = randn(num_experts, k, n)
         batch_sizes = torch.tensor([219, 2246, 5, 8103, 1, 1117, 4693, 0]).to(torch.long)
-        if gpu_batch_sizes:
+        if batch_sizes_on_device:
             batch_sizes = batch_sizes.cuda()
 
         a.requires_grad_(True)
@@ -140,7 +140,7 @@ class EdgeCasesTest(unittest.TestCase):
         self.assertTrue(allclose(a.grad, a_ref.grad))
         self.assertTrue(allclose(b.grad, b_ref.grad))
 
-    def testGroupedGemm_ZeroK(self, gpu_batch_sizes):
+    def testGroupedGemm_ZeroK(self, batch_sizes_on_device):
         sz = 128
         total_tokens = 192
 
@@ -148,7 +148,7 @@ class EdgeCasesTest(unittest.TestCase):
         b = torch.ones(total_tokens, sz).cuda().to(torch.bfloat16)
         c = torch.ones(4, sz, sz).cuda().to(torch.bfloat16)
         batch_sizes = torch.tensor([0, 128, 0, 64]).to(torch.long)
-        if gpu_batch_sizes:
+        if batch_sizes_on_device:
             batch_sizes = batch_sizes.cuda()
 
         ops.backend.gmm(a, b, batch_sizes, trans_a=True, c=c)
