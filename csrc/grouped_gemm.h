@@ -2,7 +2,7 @@
 
 namespace grouped_gemm {
 
-void GroupedGemm(torch::Tensor a,
+void GroupedGemm_base(torch::Tensor a,
 		 torch::Tensor b,
 		 torch::Tensor c,
 		 torch::Tensor batch_sizes,

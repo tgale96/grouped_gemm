@@ -2,4 +2,6 @@
 build
 *.egg-info
 dist
+*.so
+traces
 __pycache__

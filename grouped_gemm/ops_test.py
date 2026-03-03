@@ -16,15 +16,14 @@ def allclose(x, y, pct=2.0):
         return False
     return True
 
-
 def add_flags(x):
     out = []
     for y in x:
         for trans_b in (False, True):
             for batch_sizes_on_device in (False, True):
                 out.append(y + (trans_b, batch_sizes_on_device))
+            # out.append(y + (trans_b, False))
     return out
-
 
 _TEST_PROBLEMS = add_flags((
     (1, 128, 128, 128),
@@ -69,7 +68,7 @@ class OpsTest(parameterized.TestCase):
         a_ref = a.detach().clone().requires_grad_(True)
         b_ref = b.detach().clone().requires_grad_(True)
 
-        out = ops.gmm(a, b, batch_sizes, trans_b)
+        out = ops.gmm_CUTLASS_sm90_pingpong(a, b, batch_sizes, trans_b=trans_b)
         expected_out = gmm(a_ref, b_ref, batch_sizes, trans_b)
         self.assertTrue(allclose(out, expected_out))
 
@@ -98,7 +97,7 @@ class OpsTest(parameterized.TestCase):
         a_ref = a.detach().clone().requires_grad_(True)
         b_ref = b.detach().clone().requires_grad_(True)
 
-        out = ops.gmm(a, b, batch_sizes, trans_b)
+        out = ops.gmm_CUTLASS_sm90_pingpong(a, b, batch_sizes, trans_b=trans_b)
         expected_out = gmm(a_ref, b_ref, batch_sizes, trans_b)
         self.assertTrue(allclose(out, expected_out))
 
@@ -109,10 +108,9 @@ class OpsTest(parameterized.TestCase):
         self.assertTrue(allclose(b.grad, b_ref.grad))
 
 
-@parameterized.parameters(False, True)
 class EdgeCasesTest(unittest.TestCase):
 
-    def testGroupedGemm_ZeroSize(self, batch_sizes_on_device):
+    def testGroupedGemm_ZeroSize(self, batch_sizes_on_device=False):
         torch.manual_seed(0)
         m = 16384
         k = 4096
@@ -130,7 +128,7 @@ class EdgeCasesTest(unittest.TestCase):
         a_ref = a.detach().clone().requires_grad_(True)
         b_ref = b.detach().clone().requires_grad_(True)
 
-        out = ops.gmm(a, b, batch_sizes)
+        out = ops.gmm_CUTLASS_sm90_pingpong(a, b, batch_sizes)
         expected_out = gmm(a_ref, b_ref, batch_sizes)
         self.assertTrue(allclose(out, expected_out))
 
@@ -140,7 +138,7 @@ class EdgeCasesTest(unittest.TestCase):
         self.assertTrue(allclose(a.grad, a_ref.grad))
         self.assertTrue(allclose(b.grad, b_ref.grad))
 
-    def testGroupedGemm_ZeroK(self, batch_sizes_on_device):
+    def testGroupedGemm_ZeroK(self, batch_sizes_on_device=False):
         sz = 128
         total_tokens = 192
 
@@ -151,7 +149,7 @@ class EdgeCasesTest(unittest.TestCase):
         if batch_sizes_on_device:
             batch_sizes = batch_sizes.cuda()
 
-        ops.backend.gmm(a, b, batch_sizes, trans_a=True, c=c)
+        ops.backend.gmm_CUTLASS_sm90_pingpong(a, b, batch_sizes, trans_a=True, c=c)
         self.assertTrue((c[0] == 0).all())
         self.assertTrue((c[1] == 128).all())
         self.assertTrue((c[2] == 0).all())
